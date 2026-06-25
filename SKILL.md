@@ -1,69 +1,97 @@
 ---
-name: os-experiment-workflow
+name: experiment-report-workflow
 description: >
-  操作系统课程实验的端到端工作流：从需求分析、环境检查、实验执行与截图采集，
-  到 python-docx 生成符合格式要求的实验报告，再到与模板对比校验格式。
-  适用于操作系统课程的 4 次实验（验证型/设计型/综合型）。
-version: "1.0.0"
+  课程实验报告的端到端工作流：从需求分析、模板格式提取、环境检查、
+  实验执行与截图采集，到根据模板格式生成符合要求的实验报告，再到与模板对比校验格式。
+  适用于各类需要提交 .docx 格式实验报告的课程实验。
+version: "2.0.0"
 trigger_keywords:
-  - 操作系统实验
-  - 实验报告
-  - 实验一/二/三/四
-  - 进程控制
-  - 进程调度
-  - 进程同步
-  - 内存管理
-  - 实验环境搭建
+  - 完成实验报告
+  - 课程实验
+  - 实验N
 agent_created: true
 bundled_files:
-  - references/vm_connection.md
+  - environments/linux-vm-ssh.md
   - references/report_format.md
   - scripts/crop_screenshots.py
   - scripts/build_report.py
+  - scripts/extract_template_format.py
 dependencies:
   python:
     - python-docx>=0.8.11
     - Pillow>=9.0.0
 ---
 
-# 操作系统实验端到端工作流
+# 课程实验报告端到端工作流
 
 ## 总览
 
-本 Skill 覆盖操作系统课程实验的完整生命周期，分为 **5 个阶段**，每个阶段有明确的输入、动作、输出和检查点。
+本 Skill 覆盖课程实验的完整生命周期，分为 **5 个阶段**，每个阶段有明确的输入、动作、输出和检查点。
 
 ```
-Phase 1: 需求分析    →  理解实验要求，明确做什么
-Phase 2: 环境检查    →  确认本地+VM 工具链就绪
-Phase 3: 实验执行    →  写代码、编译运行、截图
-Phase 4: 报告撰写    →  按模板格式生成 .docx
-Phase 5: 格式校验    →  与模板对比、修复差异
+Phase 1: 需求分析 + 模板格式提取  →  理解实验要求，提取模板格式
+Phase 2: 环境检查                  →  确认截图工具、模板文件、指导文件就绪
+Phase 3: 实验执行与截图            →  写代码、运行、截图（环境无关）
+Phase 4: 报告撰写                  →  按模板格式生成 .docx
+Phase 5: 格式校验                  →  与模板对比、修复差异
 ```
 
 **核心原则**：
 - 每个 Phase 结束时**必须停下来等用户确认**再进入下一 Phase
 - 遇到工具缺失时**明确告知用户**，不要默默跳过
-- 所有截图必须**真实采集自 VM 终端**，不得生成模拟图片
+- 所有截图必须**真实采集**，不得生成模拟图片
 
 ---
 
-## Phase 1: 需求分析
+## Phase 1: 需求分析 + 模板格式提取
 
 ### 输入
-- 用户提供的实验指导文件（通常是 .pptx 或 .docx 或 .md）
+- 用户提供的实验指导文件（通常是 .pptx / .docx / .md / .pdf）
+- 用户提供的报告模板文件（.doc 或 .docx）
 
 ### 动作
 
-1. **读取实验指导文件**，提取以下信息：
-   - 实验编号（实验一/二/三/四）
-   - 实验标题
-   - 实验类型（验证型 / 设计型 / 综合型）
-   - 实验目的（逐条列出）
-   - 实验内容（逐条列出）
-   - 实验步骤及相关命令/代码
-   - 需要的截图数量（每个步骤的截图要求）
+#### 1.1 读取实验指导文件
 
-2. **整理输出需求清单**，格式如下：
+提取以下信息：
+
+| 信息项 | 说明 |
+|--------|------|
+| 实验编号 | 实验一/二/三/四 或 实验 1/2/3/4 |
+| 实验标题 | 完整标题 |
+| 实验类型 | 验证型 / 设计型 / 综合型（如有） |
+| 实验目的 | 逐条列出 |
+| 实验内容 | 逐条列出 |
+| 实验步骤 | 每步的标题、描述、命令/代码 |
+| 截图要求 | 每个步骤需要几张截图、截图内容是什么 |
+
+#### 1.2 提取模板格式
+
+> **⚠️ 前置条件**：用户需将模板 `.doc` 另存为 `.docx`（**Transitional OOXML 格式**，非 Strict）。
+
+运行 `scripts/extract_template_format.py` 自动提取模板格式：
+
+```bash
+python scripts/extract_template_format.py 模板.docx 输出格式JSON路径
+```
+
+该脚本会提取以下内容（详见 `references/report_format.md` 的"需从模板提取"部分）：
+
+| 提取项 | 说明 | 缺失时处理 |
+|--------|------|-------------|
+| 信息表结构 | 几行×几格、所有标签文本 | **询问用户** |
+| 章节结构 | 有几章、每章标题文字 | **询问用户** |
+| 章节标题格式 | 字体/字号/颜色/对齐 | 用 python-docx 读取 |
+| 正文格式 | 字体/字号 | 用 python-docx 读取 |
+| 表格列宽 | 各列宽度 | 用 python-docx 读取 |
+| 页边距 | 上/下/左/右边距 | 用 python-docx 读取 |
+| 图片宽度 | 模板中图片的宽度 | 用 python-docx 读取 |
+
+**如果脚本无法自动提取某项**（如信息表标签文字不标准），列出缺失项，**逐一询问用户**。
+
+#### 1.3 输出两份清单
+
+**清单 1：实验需求清单**
 
 ```
 ## 实验{N}：{标题} — 需求清单
@@ -77,16 +105,36 @@ Phase 5: 格式校验    →  与模板对比、修复差异
 | 预期截图 | N 张 |
 ```
 
-3. **识别 VM 上需要的操作**：
-   - 需要创建哪些文件？（C 源文件等）
-   - 需要安装哪些工具？（gcc 已有，需确认）
-   - 每个步骤的命令序列是什么？
+**清单 2：模板格式清单**
+
+```
+## 模板格式清单
+
+### 固定规则（不依赖模板）
+- 截图规则：图X.Y 编号、居中、宋体 9pt 加粗
+- 代码块：Consolas 9pt + #F2F2F2 底纹
+
+### 已从模板提取
+- 信息表：3行×11格，标签：{标签列表}
+- 章节：{章节列表}
+- 章节标题：{字体/字号/颜色}
+- 正文：{字体/字号}
+- 表格列宽：{列宽列表}
+- 页边距：{边距}
+- 图片宽度：{宽度}
+
+### 需用户确认
+- [ ] 信息表中"课程名称"填什么？
+- [ ] 信息表中"学生姓名"填什么？
+- [ ] ...
+```
 
 ### 输出
-- 清晰的需求清单，以表格/列表形式呈现给用户
+- 实验需求清单
+- 模板格式清单（含需用户确认的项）
 
 ### 检查点
-> **停下来问用户：**"以上是我对实验要求理解的需求清单，是否正确？有没有遗漏？确认后进入环境检查。"
+> **停下来问用户：**"以上是我对实验要求和模板格式的理解。请确认：① 需求清单是否正确？② 模板格式提取是否完整？③ 需你确认的项是否已填写？确认后进入环境检查。"
 
 ---
 
@@ -94,54 +142,61 @@ Phase 5: 格式校验    →  与模板对比、修复差异
 
 ### 输入
 - Phase 1 的需求清单
+- Phase 1 的模板格式清单
 
 ### 动作
 
-#### 2.1 本地工具链检查
+#### 2.1 强制前置检查（不满足条件不能继续）
 
-逐一检查以下工具是否可用，并记录状态：
+必须全部满足，否则停止并提示用户：
+
+| 检查项 | 检查方式 | 不满足时的提示 |
+|--------|----------|----------------|
+| 截图工具可用 | 根据环境判断（见 2.2） | 告知用户安装对应截图工具 |
+| 模板 .docx 文件已提供 | 检查文件存在且可读取 | 提示用户提供模板文件 |
+| 实验指导文件已提供 | 检查文件存在且可读取 | 提示用户提供指导文件 |
+
+#### 2.2 确定执行环境
+
+**询问用户**：实验代码在哪里运行？
+
+| 环境 | 特征 | 截图工具 | 参考配置 |
+|------|------|----------|----------|
+| Windows 本机 | 代码在本地运行 | `mcp__desktop-screenshot__take_screenshot` | 无需额外配置 |
+| Linux VM（SSH） | 代码在远程 Linux 上运行 | `gnome-screenshot`（需 X 桌面） | 见 `environments/linux-vm-ssh.md` |
+| macOS 本机 | 代码在本地运行 | `screencapture` | 无需额外配置 |
+| Docker 容器 | 代码在容器内运行 | 视情况而定 | 需用户说明 |
+
+根据用户回答，确定后续 Phase 3 的执行方式。
+
+#### 2.3 本地工具链检查
+
+逐一检查：
 
 | 工具 | 检查方式 | 用途 |
 |------|----------|------|
 | Python 3 | `python --version` | 运行脚本 |
 | python-docx | `python -c "import docx"` | 生成报告 |
 | Pillow (PIL) | `python -c "from PIL import Image"` | 裁剪截图 |
-| SSH 客户端 | `ssh -V` | 连接 VM |
-| SSH 密钥 | 检查 `~/.ssh/id_rsa` 或 `/c/Users/李冠桥/.ssh/id_rsa` | 免密登录 |
 
-#### 2.2 VM 工具链检查
+缺失时：告知安装命令 `pip install python-docx pillow`，询问是否安装。
 
-SSH 到 VM 检查：
+#### 2.4 明确需要用户手动完成的部分
 
-| 工具 | 检查命令 | 用途 |
-|------|----------|------|
-| gcc | `gcc --version` | 编译 C 程序 |
-| gnome-terminal | `which gnome-terminal` | 在 X 桌面显示终端 |
-| 截图脚本 | `test -f /home/lalala/vm_screenshot.sh` | 捕获终端内容 |
-| sudo | `sudo -n true` | 截图脚本需要 sudo |
+根据执行环境，列出需用户手动完成的操作：
 
-#### 2.3 缺失项处理
-
-如果任何工具缺失，**明确告知用户**：
-
-- 本地工具缺失 → 告知安装命令（如 `pip install python-docx pillow`），询问是否安装
-- VM 工具缺失 → 告知用户需要在 VM 上手动安装什么，询问是否继续
-- GDM 状态 → 提醒用户截图前需要在 VM 图形界面登录
-
-#### 2.4 明确哪些需要用户手动完成
-
-必须告知用户以下事项需要手动操作：
-
-> **需要你手动完成的部分：**
-> 1. VM 图形界面登录（解锁 GDM）—— 截图前必须
-> 2. 模板 .doc → .docx 转换 —— 用 WPS/Word 打开后"另存为 .docx"
-> 3. [如果有工具缺失] 安装 xxx
+```
+需要你手动完成的部分：
+1. 模板 .doc → .docx 转换（如尚未完成）—— 用 WPS/Word "另存为 .docx"
+2. [如果环境是 Linux VM] VM 图形界面登录（解锁 GDM）—— 截图前必须
+3. [如果有工具缺失] 安装 xxx
+```
 
 ### 输出
-- 环境检查报告（就绪项 + 缺失项 + 用户需手动完成项）
+- 环境检查报告（就绪项 + 缺失项 + 用户需手动完成项 + 确定的执行环境）
 
 ### 检查点
-> **停下来问用户：**"环境检查完成。以上工具就绪/缺失情况如上。缺失的工具是否需要我帮忙安装？需要你手动完成的部分是否清楚？确认后进入实验执行。"
+> **停下来问用户：**"环境检查完成。执行环境确定为：{环境}。以上工具就绪/缺失情况如上。确认后进入实验执行。"
 
 ---
 
@@ -149,67 +204,48 @@ SSH 到 VM 检查：
 
 ### 输入
 - Phase 1 的实验步骤和命令序列
-- Phase 2 确认的环境就绪状态
+- Phase 2 确认的环境就绪状态和执行环境
 
 ### 动作
 
-#### 3.1 创建 VM 工作目录
+根据 Phase 2 确定的执行环境，选择对应的执行方式：
 
-```bash
-ssh ... lalala@192.168.5.135 'mkdir -p /home/lalala/program_sec/os/experiment{N}'
-```
+---
 
-#### 3.2 编写代码并上传
+#### 方式 A：Windows/macOS 本机执行
 
-- 在本地写好 C 源文件
-- 通过 SCP 上传到 VM：
+1. **编写代码**：在本地工作目录编写源文件
+2. **运行并捕获输出**：直接运行，记录输出
+3. **截图**：使用对应工具
+   - Windows：`mcp__desktop-screenshot__take_screenshot`
+   - macOS：`screencapture` 命令
+4. **截图裁剪**：使用 `scripts/crop_screenshots.py`
 
-```bash
-scp ... source.c lalala@192.168.5.135:/home/lalala/program_sec/os/experiment{N}/
-```
+---
 
-#### 3.3 编译并验证
+#### 方式 B：Linux VM（SSH）执行
 
-```bash
-ssh ... lalala@192.168.5.135 'cd /home/lalala/program_sec/os/experiment{N} && gcc source.c -o program && echo "编译成功" || echo "编译失败"'
-```
+**详细步骤见 `environments/linux-vm-ssh.md`。** 核心流程：
 
-如果编译失败 → 修复代码，重新上传，直到成功。
+1. SSH 连接 VM，创建工作目录
+2. 上传源代码文件
+3. 编译（如需要）并验证
+4. **⚠️ 截图前确认：用户已登录 VM 图形界面（GDM 已解锁）**
+5. 在 X 桌面启动终端，执行命令序列
+6. 运行截图脚本，SCP 拉回本地
+7. **必须清理**：`pkill -f gnome-terminal`
+8. 截图裁剪：使用 `scripts/crop_screenshots.py`
 
-#### 3.4 采集截图
+---
 
-**⚠️ 截图前必须确认：用户已登录 VM 图形界面（GDM 已解锁）。**
+#### 通用规则（两种方式都适用）
 
-详细步骤见 `references/vm_connection.md` 的"截图工作流"一节。核心流程：
-
-1. 在 X 桌面启动 gnome-terminal，执行命令序列
-2. 运行截图脚本
-3. SCP 拉回本地
-4. **必须清理**：`pkill -f gnome-terminal`
-
-**关键规则：**
-- 每张截图的命令之间用 `echo` 显示提示行
-- 最后加 `sleep 12` 确保窗口保持打开
-- 截图后立即 pkill，避免多窗口叠加
-- 如果截图全黑 → GDM 锁屏，需要用户手动解锁后重试
-- 如果截图是蓝屏 → GDM 锁屏未解除
-
-#### 3.5 截图裁剪
-
-使用 `scripts/crop_screenshots.py`：
-
-```bash
-python scripts/crop_screenshots.py 实验{N}/screenshots/ 实验{N}/screenshots/cropped/
-```
-
-如果自动检测不精确，手动指定裁剪参数：
-
-```bash
-python scripts/crop_screenshots.py ... --crops '{"1":[5,90,650,550],"2":[5,90,650,600]}'
-```
+- 每张截图的命令之间用 `echo` 显示提示行（方便后期裁剪时定位内容区域）
+- 截图后立即清理临时窗口/进程
+- 如果截图结果异常（全黑/蓝屏/内容不全）→ 告知用户，询问是否重截
 
 ### 输出
-- VM 上编译运行成功的程序
+- 运行成功的程序（或运行记录）
 - 裁剪后的真实截图（存放在 `实验{N}/screenshots/cropped/`）
 
 ### 检查点
@@ -220,18 +256,14 @@ python scripts/crop_screenshots.py ... --crops '{"1":[5,90,650,550],"2":[5,90,65
 ## Phase 4: 报告撰写
 
 ### 输入
-- Phase 1 的需求清单（实验内容）
+- Phase 1 的实验需求清单
+- Phase 1 的模板格式清单
 - Phase 3 的裁剪截图
-- 模板 .docx 文件（用户需先将 .doc 另存为 .docx）
+- 模板 .docx 文件
 
 ### 动作
 
-#### 4.1 准备模板
-
-- 用户将 `实验报告的格式.doc` 用 WPS/Word 另存为 `.docx`（**Transitional OOXML 格式**，非 Strict）
-- AI 打开模板 .docx，分析段落结构，记录每个章节标题的段落索引
-
-#### 4.2 准备实验数据 JSON
+#### 4.1 准备实验数据 JSON
 
 按照 `scripts/build_report.py` 的 DATA_SCHEMA 格式，将实验内容组织为 JSON：
 
@@ -241,6 +273,11 @@ python scripts/crop_screenshots.py ... --crops '{"1":[5,90,650,550],"2":[5,90,65
   "type": "验证型",
   "objectives": ["目的1", "目的2", ...],
   "content_items": ["内容1", "内容2", ...],
+  "info_table": {
+    "课程名称": "操作系统",
+    "学生姓名": "张三",
+    "学号": "20240001"
+  },
   "steps": [
     {
       "title": "1. 步骤标题",
@@ -255,18 +292,29 @@ python scripts/crop_screenshots.py ... --crops '{"1":[5,90,650,550],"2":[5,90,65
 }
 ```
 
-#### 4.3 生成报告
+> **注意**：`info_table` 的键值对**从模板信息表的标签动态读取**，不是硬编码。
+> 例如模板信息表有"课程名称"标签，则 JSON 中就有 `"课程名称"` 键。
+
+#### 4.2 生成报告
 
 ```bash
 python scripts/build_report.py 1 模板.docx 输出.docx 截图目录 --data 'JSON字符串'
 ```
 
-#### 4.4 处理生成中的常见问题
+`build_report.py` 的行为：
+- 自动从模板 .docx 中读取信息表的所有标签
+- 用 JSON 中 `info_table` 的对应键值填充
+- 按模板的章节结构填充内容
+- 按模板格式设置字体/字号/颜色/底纹
 
-- **模板 .docx 打不开** → 确认用户用的是 Transitional 格式，不是 Strict OOXML
-- **截图路径找不到** → 检查截图文件名是否和 JSON 中一致
-- **章节标题匹配失败** → 检查模板段落文本是否包含"实验目的""实验内容"等关键词
-- **信息表未填充** → build_report.py 可能需要根据实际模板调整单元格索引
+#### 4.3 处理生成中的常见问题
+
+| 问题 | 原因 | 处理方式 |
+|------|------|----------|
+| 模板 .docx 打不开 | 非 Transitional OOXML 格式 | 提示用户用 WPS/Word 另存为 Transitional 格式 |
+| 截图路径找不到 | 文件名与 JSON 中不一致 | 检查并修正 JSON 中的 `image` 字段 |
+| 章节标题匹配失败 | 模板段落文本与预期不符 | 用 python-docx 打印所有段落文本，手动匹配 |
+| 信息表未填充 | 标签文本不匹配 | 检查 `extract_template_format.py` 的输出，修正标签名 |
 
 ### 输出
 - 实验报告 .docx 文件（v1 初版）
@@ -281,31 +329,38 @@ python scripts/build_report.py 1 模板.docx 输出.docx 截图目录 --data 'JS
 ### 输入
 - Phase 4 生成的报告 .docx
 - 模板 .docx（作为格式参照物）
-- `references/report_format.md`（格式规范）
+- Phase 1 的模板格式清单
+- `references/report_format.md`（固定规则参考）
 
 ### 动作
 
 #### 5.1 并行对比：生成报告 vs 模板
 
-**同时打开两个文件**，逐项对比以下内容（对照 `references/report_format.md`）：
+**同时打开两个文件**，逐项对比：
+
+**固定规则（不依赖模板，必须全部符合）：**
 
 | 检查项 | 期望值 | 验证方式 |
 |--------|--------|----------|
-| 信息表结构 | 3行×11格，标签列 1500 DXA | 读取表格属性 |
-| 文档大标题 | 宋体 三号(16pt) 加粗 居中 | 检查段落属性 |
-| 章节标题(一~五) | 蓝色 四号(14pt) 加粗 | 检查 Run 颜色和字号 |
-| 正文段落 | 宋体 五号(10.5pt) | 检查 Run 字体和字号 |
-| 代码块字体 | Consolas 小五(9pt) | 逐一检查代码 Run |
+| 截图编号 | 图X.Y 格式，按章节分别编号 | 正则检查 |
+| 截图图注 | 宋体 9pt 加粗 居中 | 检查 Run 属性 |
+| 代码块字体 | Consolas 9pt | 逐一检查代码 Run |
 | 代码块底纹 | #F2F2F2 | 检查 shading 属性 |
-| 图注 | 宋体 9pt 加粗 居中 图X.Y | 正则 + 属性检查 |
-| 图片宽度 | 约 5.5 英寸 | 检查图片尺寸 |
-| 页边距 | 1134 DXA | 检查 section 属性 |
-| 表格列宽 | 标签列 1500 DXA | 检查列宽度 |
-| 章节顺序 | 一→二→三→四→五 | 检查段落顺序 |
+
+**从模板提取的规则（按 Phase 1 格式清单逐项检查）：**
+
+| 检查项 | 期望值（来自格式清单） | 验证方式 |
+|--------|------------------------|----------|
+| 信息表结构 | {格式清单中的记录} | 读取表格属性 |
+| 章节标题格式 | {格式清单中的记录} | 检查 Run 颜色/字号 |
+| 正文格式 | {格式清单中的记录} | 检查 Run 字体/字号 |
+| 表格列宽 | {格式清单中的记录} | 检查列宽度 |
+| 页边距 | {格式清单中的记录} | 检查 section 属性 |
+| 图片宽度 | {格式清单中的记录} | 检查图片尺寸 |
 
 #### 5.2 输出差异清单
 
-列出所有不符合模板的差异项：
+列出所有不符合的项：
 
 ```
 ## 格式差异清单
@@ -336,44 +391,22 @@ python scripts/build_report.py 1 模板.docx 输出.docx 截图目录 --data 'JS
 
 ## 附录：文件索引
 
+### Environments（执行环境配置）
+
+| 文件 | 内容 | 何时阅读 |
+|------|------|----------|
+| `environments/linux-vm-ssh.md` | Linux VM（SSH）环境的连接参数、截图工作流详细步骤 | 当执行环境为 Linux VM 时，Phase 2/3 参考 |
+
 ### References（参考文档）
 
 | 文件 | 内容 | 何时阅读 |
 |------|------|----------|
-| `references/vm_connection.md` | VM 连接参数、SSH 命令模板、截图工作流详细步骤 | Phase 2 环境检查、Phase 3 截图 |
-| `references/report_format.md` | 报告格式规范（字体、字号、表格、图注、页边距） | Phase 4 报告撰写、Phase 5 格式校验 |
+| `references/report_format.md` | 报告格式规范（固定规则 + 需从模板提取的项说明） | Phase 1 格式提取、Phase 5 格式校验 |
 
 ### Scripts（可执行脚本）
 
 | 文件 | 功能 | 何时使用 |
 |------|------|----------|
-| `scripts/crop_screenshots.py` | 裁剪 VM 全屏截图，去除桌面空白 | Phase 3 截图后 |
+| `scripts/extract_template_format.py` | 从模板 .docx 自动提取格式信息，输出 JSON | Phase 1 模板格式提取 |
+| `scripts/crop_screenshots.py` | 裁剪全屏截图，去除桌面空白 | Phase 3 截图后 |
 | `scripts/build_report.py` | 从模板 + JSON 数据生成 .docx 报告 | Phase 4 报告撰写 |
-
----
-
-## 快速参考：VM 一键命令模板
-
-```bash
-# SSH 别名（简化命令）
-SSH_CMD="ssh -i /c/Users/李冠桥/.ssh/id_rsa -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null lalala@192.168.5.135"
-SCP_CMD="scp -i /c/Users/李冠桥/.ssh/id_rsa -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-
-# 创建工作目录
-$SSH_CMD 'mkdir -p /home/lalala/program_sec/os/experiment{N}'
-
-# 上传文件
-$SCP_CMD local_file.c lalala@192.168.5.135:/home/lalala/program_sec/os/experiment{N}/
-
-# 编译
-$SSH_CMD 'cd /home/lalala/program_sec/os/experiment{N} && gcc file.c -o file'
-
-# 截图
-$SSH_CMD 'sudo bash /home/lalala/vm_screenshot.sh lalala /tmp/exp{N}_X.png'
-
-# 拉回截图
-$SCP_CMD lalala@192.168.5.135:/tmp/exp{N}_X.png ./screenshots/
-
-# 清理终端
-$SSH_CMD 'pkill -f gnome-terminal'
-```
