@@ -4,7 +4,7 @@ description: >
   课程实验报告的端到端工作流：从需求分析、模板格式提取、环境检查、
   实验执行与截图采集，到根据模板格式生成符合要求的实验报告，再到与模板对比校验格式。
   适用于各类需要提交 .docx 格式实验报告的课程实验。
-version: "2.0.0"
+version: "3.0.0"
 trigger_keywords:
   - 完成实验报告
   - 课程实验
@@ -13,9 +13,12 @@ agent_created: true
 bundled_files:
   - environments/linux-vm-ssh.md
   - references/report_format.md
+  - references/screenshot-quality.md
+  - scripts/vm_shot.sh
   - scripts/crop_screenshots.py
   - scripts/build_report.py
   - scripts/extract_template_format.py
+  - scripts/verify_report_format.py
 dependencies:
   python:
     - python-docx>=0.8.11
@@ -227,29 +230,59 @@ python scripts/extract_template_format.py 模板.docx 输出格式JSON路径
 
 **详细步骤见 `environments/linux-vm-ssh.md`。** 核心流程：
 
-1. SSH 连接 VM，创建工作目录
-2. 上传源代码文件
-3. 编译（如需要）并验证
-4. **⚠️ 截图前确认：用户已登录 VM 图形界面（GDM 已解锁）**
-5. 在 X 桌面启动终端，执行命令序列
-6. 运行截图脚本，SCP 拉回本地
-7. **必须清理**：`pkill -f gnome-terminal`
-8. 截图裁剪：使用 `scripts/crop_screenshots.py`
+1. SSH 连接 VM，创建工作目录；上传命令脚本与 `scripts/vm_shot.sh`
+2. `sed -i 's/\r$//'` 去掉脚本 CRLF
+3. **⚠️ 截图前必须**：唤醒屏幕（`xset dpms force on`）+ 解锁会话（`loginctl unlock-session`）
+   + 停掉 PackageKit（`systemctl stop/mask packagekit`）
+4. 用 `scripts/vm_shot.sh` 执行并截图（它已封装上述全部环节）：
+   ```bash
+   sudo bash /tmp/vm_shot.sh /tmp/s01.png /tmp/steps/s01.sh
+   ```
+5. SCP 拉回截图与 `/tmp/_shot_log.txt`（会话记录）
+6. 截图裁剪：`scripts/crop_screenshots.py --skip-top 37 --margin 8 --uniform-width`
 
 ---
 
 #### 通用规则（两种方式都适用）
 
-- 每张截图的命令之间用 `echo` 显示提示行（方便后期裁剪时定位内容区域）
+**★ 最重要的规则：截图必须是"真实终端产生的"。**
+
+- ❌ **不要**在命令脚本里 `echo "[root@master ~]# xxx"` 手工画提示符——
+  这样生成的提示符是普通文本、命令无 tty 回显、输出一次性刷出，**一眼就能看出是脚本生成的**。
+- ✅ 让命令真正在交互式 shell 中执行：提示符由 shell 的 PS1 输出、命令由终端回显。
+  Linux VM 上用 `expect` 驱动 `bash -i`（`scripts/vm_shot.sh` 已实现）。
+- 详见 `references/screenshot-quality.md`。
+
+其他通用规则：
+
+- 慢命令必须**等到执行完成**再截图（done 标记轮询），不要盲等固定秒数
+- 控制每个命令脚本的输出行数（窗口行数 − 1 为上限，建议再留 2~6 行余量）
 - 截图后立即清理临时窗口/进程
-- 如果截图结果异常（全黑/蓝屏/内容不全）→ 告知用户，询问是否重截
+- 如果截图结果异常（全黑/锁屏页/内容不全/命令被滚出）→ 告知用户，询问是否重截
+
+#### 截图 QC 自检（采集完成后必做）
+
+**先做机器可查的检查，再看图**：
+
+- [ ] 每张图**首行是提示符**（不是输出内容）→ 说明没有滚屏
+- [ ] 每张图的**内容行数**在预期区间内（不溢出、不留大片空白）
+- [ ] 全部截图生成**缩略图总览**，一眼扫过：无全黑、无锁屏页、无空桌面
+- [ ] 尺寸：宽度是否一致；高度是否都在合理区间
+- [ ] 终端风格统一（同一字体、配色、窗口几何）
+
+> 把「首行是不是提示符」作为常规检查项——这是**最隐蔽的截图缺陷来源**，
+> 日志里一切正常，只有看图才发现命令被滚出去了。
 
 ### 输出
 - 运行成功的程序（或运行记录）
-- 裁剪后的真实截图（存放在 `实验{N}/screenshots/cropped/`）
+- 裁剪后的真实截图（存放在 `实验{N}/screenshots/`）
+- 会话记录 `_shot_log.txt`（撰写报告正文的原始依据）
 
 ### 检查点
-> **停下来问用户：**"截图已全部采集并裁剪完毕，共 N 张。请检查截图质量和内容是否满意？是否需要重截某张？确认后进入报告撰写。"
+> **停下来问用户：**"截图已全部采集并裁剪完毕，共 N 张，尺寸情况为 {…}。请检查截图质量和内容是否满意？是否需要重截某张？确认后进入报告撰写。"
+
+> 若裁剪策略存在取舍（统一尺寸 vs 不留空白），**必须在此处让用户明确选择**，
+> 并说明两种方式可由同一批原图产出、无需重新截图。
 
 ---
 
@@ -336,7 +369,21 @@ python scripts/build_report.py 1 模板.docx 输出.docx 截图目录 --data 'JS
 
 #### 5.1 并行对比：生成报告 vs 模板
 
-**同时打开两个文件**，逐项对比：
+**先跑自动校验脚本**，它会逐项检查固定规则与模板规则，并输出差异清单：
+
+```bash
+python scripts/verify_report_format.py 模板.docx 生成报告.docx --figs <预期图片数>
+```
+
+退出码 0 = 全部通过；1 = 有差异。脚本自动检查的项目：
+
+| 类别 | 检查项 |
+|------|--------|
+| 固定规则 | 图注数量、图注格式（宋体 9pt 加粗居中）、图编号 `图X.Y` 且连续、代码块 Consolas 9pt + `#F2F2F2`、信息表在章节之前、无红色说明文字残留 |
+| 模板规则 | 页边距、章节标题格式、正文格式、信息表行列数、图片宽度、图片数量 |
+| 结构 | 章节清单（含模板未提供、需自行新增的章节）、空白段落数（会排除图片段落） |
+
+若需额外核对模板特有项目，再**同时打开两个文件**人工比对：
 
 **固定规则（不依赖模板，必须全部符合）：**
 
@@ -402,11 +449,14 @@ python scripts/build_report.py 1 模板.docx 输出.docx 截图目录 --data 'JS
 | 文件 | 内容 | 何时阅读 |
 |------|------|----------|
 | `references/report_format.md` | 报告格式规范（固定规则 + 需从模板提取的项说明） | Phase 1 格式提取、Phase 5 格式校验 |
+| `references/screenshot-quality.md` | **截图质量规范**：真实终端原则、四步流水线、行数预算、裁剪策略、QC 自检清单、故障速查 | **Phase 3 全程必读**；用户对截图提出意见时优先查这份 |
 
 ### Scripts（可执行脚本）
 
 | 文件 | 功能 | 何时使用 |
 |------|------|----------|
 | `scripts/extract_template_format.py` | 从模板 .docx 自动提取格式信息，输出 JSON | Phase 1 模板格式提取 |
-| `scripts/crop_screenshots.py` | 裁剪全屏截图，去除桌面空白 | Phase 3 截图后 |
-| `scripts/build_report.py` | 从模板 + JSON 数据生成 .docx 报告 | Phase 4 报告撰写 |
+| `scripts/vm_shot.sh` | **Linux VM 截图脚本**：expect 驱动真实交互式 bash + 窗口截图 + 会话记录 + 环境唤醒/解锁/清理 | Phase 3，环境为 Linux VM SSH 时 |
+| `scripts/crop_screenshots.py` | 裁剪截图，支持 `--rect`（统一尺寸）/ `--uniform-width`（统一宽+紧贴高）/ `--skip-top` / `--margin` | Phase 3 截图后 |
+| `scripts/build_report.py` | 从模板 + JSON 数据生成 .docx 报告（支持 `--data` / `--data-file`） | Phase 4 报告撰写 |
+| `scripts/verify_report_format.py` | 逐项比对模板与成稿的格式，输出通过/差异清单（退出码 0/1） | Phase 5 格式校验 |

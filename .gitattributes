@@ -1,0 +1,7 @@
+# 统一换行符：本仓库含 shell 脚本与 Python 脚本，必须在 Linux 上可直接执行。
+# 若不强制 LF，Windows 上检出后上传到 Linux 会报 `$'\r': command not found`。
+* text=auto eol=lf
+*.sh  text eol=lf
+*.py  text eol=lf
+*.md  text eol=lf
+*.txt text eol=lf

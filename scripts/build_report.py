@@ -144,42 +144,127 @@ def get_cell_text(cell):
     return cell.text.strip()
 
 
+def remove_red_paragraphs(doc):
+    """
+    删除模板中用于"格式说明"的红色字体段落。
+
+    绝大多数课程模板会在正文里放红色占位说明文字，并明确要求"正式提交时删除"。
+    判定规则：段落内所有非空 Run 的颜色均为 FF0000。
+    """
+    removed = 0
+    for para in list(doc.paragraphs):
+        runs = [r for r in para.runs if r.text.strip()]
+        if not runs:
+            continue
+        red_only = True
+        for r in runs:
+            rgb = None
+            try:
+                color = r.font.color
+                if color is not None:
+                    rgb = color.rgb
+            except Exception:
+                rgb = None
+            if rgb is None or str(rgb) != 'FF0000':
+                red_only = False
+                break
+        if red_only:
+            para._element.getparent().remove(para._element)
+            removed += 1
+    if removed:
+        print(f"已删除 {removed} 个红色说明段落")
+    return removed
+
+
 # ── 信息表动态填充 ─────────────────────────────────────
 
 def fill_info_table(doc, info_data: dict):
     """
-    动态填充信息表。
-    info_data: {"标签名": "填写内容", ...}
-    逻辑：遍历信息表第一列所有单元格，找到标签名后，
-          在对应行的其他列填写内容。
+    动态填充信息表，支持两种模板形式：
+    1. 表格形式：遍历表格第一列标签，在对应行第二列填写内容
+    2. 段落形式：在文档开头查找形如"姓名：___  学号：___  班级：___"的行并替换
     """
-    if not doc.tables:
-        print("⚠️  未找到信息表（Table 0），跳过信息表填充。")
+    if not info_data:
+        print("[!] JSON 中无 info_table 数据，跳过信息表填充。")
         return
 
-    table = doc.tables[0]
-    filled = 0
+    # 1. 表格形式
+    if doc.tables:
+        table = doc.tables[0]
+        filled = 0
+        for row in table.rows:
+            cells = row.cells
+            # 按"标签格, 内容格"成对扫描，兼容一行内多组键值
+            # （如：学院 | __ | 专业班级 | __ | 姓名 | __）
+            for k in range(0, max(len(cells) - 1, 0), 2):
+                label_cell_text = get_cell_text(cells[k])
+                if not label_cell_text:
+                    continue
+                val_cell = cells[k + 1]
+                if val_cell is None:
+                    continue
+                matched = None
+                if label_cell_text in info_data:
+                    matched = info_data[label_cell_text]
+                else:
+                    clean_label = re.sub(r'[：:\s]', '', label_cell_text)
+                    for key, val in info_data.items():
+                        if re.sub(r'[：:\s]', '', key) == clean_label:
+                            matched = val
+                            break
+                if matched is not None:
+                    set_text(val_cell.paragraphs[0], matched)
+                    filled += 1
+        if filled > 0:
+            print(f"信息表填充完成：{filled} 项")
+            return
 
-    for row_idx, row in enumerate(table.rows):
-        first_cell_text = get_cell_text(row.cells[0])
-        # 尝试精确匹配
-        if first_cell_text in info_data:
-            # 填写到第二列（通常第二列是内容列）
-            if len(row.cells) > 1:
-                set_text(row.cells[1].paragraphs[0], info_data[first_cell_text])
-                filled += 1
-        else:
-            # 尝试模糊匹配（忽略冒号、空格）
-            clean_label = re.sub(r'[：:\s]', '', first_cell_text)
-            for key, val in info_data.items():
-                clean_key = re.sub(r'[：:\s]', '', key)
-                if clean_label == clean_key:
-                    if len(row.cells) > 1:
-                        set_text(row.cells[1].paragraphs[0], val)
-                        filled += 1
-                    break
+    # 2. 段落形式：寻找包含多个标签的段落
+    info_labels = list(info_data.keys())
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        if not text:
+            continue
+        # 如果段落包含至少两个标签，视为信息表行
+        matched_labels = [label for label in info_labels if label + "：" in text or label + ":" in text]
+        if len(matched_labels) >= 2:
+            new_text = text
+            for label in matched_labels:
+                val = info_data[label]
+                # 替换 "标签：" 后的空白为实际值（使用 \g<1> 避免 val 以数字开头时被解析为分组号）
+                new_text = re.sub(
+                    rf'({re.escape(label)}[：:])\s*',
+                    rf'\g<1>{val}    ',
+                    new_text
+                )
+            # 保留第一个 run 的格式属性（如蓝色 #4472C4）
+            if para.runs:
+                first_run = para.runs[0]
+                orig_font_name = first_run.font.name
+                orig_size = first_run.font.size
+                orig_color = first_run.font.color.rgb if first_run.font.color and first_run.font.color.rgb else None
+                orig_bold = first_run.font.bold
+                for run in para.runs:
+                    run.text = ''
+                if para.runs:
+                    r = para.runs[0]
+                    r.text = new_text
+                else:
+                    r = para.add_run(new_text)
+                if orig_font_name:
+                    r.font.name = orig_font_name
+                if orig_size:
+                    r.font.size = orig_size
+                if orig_color:
+                    r.font.color.rgb = orig_color
+                if orig_bold is not None:
+                    r.font.bold = orig_bold
+            else:
+                para.text = new_text
+            print(f"信息表（段落形式）填充完成：{len(matched_labels)} 项")
+            return
 
-    print(f"信息表填充完成：{filled} 项")
+    print("[!] 未找到信息表（表格或段落形式），跳过信息表填充。")
 
 
 # ── 章节动态匹配 ───────────────────────────────────────
@@ -187,15 +272,23 @@ def fill_info_table(doc, info_data: dict):
 def find_section_indices(paras):
     """
     动态识别模板中所有章节标题的段落索引。
+    仅匹配本身就是章节标题的段落（短文本或含【】）。
     返回：{"实验目的": idx, "实验内容": idx, "实验步骤": idx, "实验结果": idx, "实验总结": idx}
     """
     indices = {}
     for idx, para in enumerate(paras):
         text = para.text.strip()
+        if not text:
+            continue
         for key in ["实验目的", "实验内容", "实验步骤", "实验结果", "实验总结"]:
             if key in text:
-                indices[key] = idx
-                break
+                # 检查是否是真正的章节标题：文本较短或包含【】
+                if len(text) <= 15 or ('【' in text and '】' in text):
+                    indices[key] = idx
+                    break
+                if text == key or text == f'【{key}】' or text.startswith(f'【{key}】'):
+                    indices[key] = idx
+                    break
     return indices
 
 
@@ -206,49 +299,65 @@ def main():
     parser.add_argument("template_path", help="模板 .docx 文件路径")
     parser.add_argument("output_path", help="输出 .docx 文件路径")
     parser.add_argument("screenshot_dir", help="截图目录（裁剪后的）")
-    parser.add_argument("--data", required=True, help="实验内容 JSON 字符串")
+    parser.add_argument("--data", help="实验内容 JSON 字符串")
+    parser.add_argument("--data-file", dest="data_file",
+                        help="实验内容 JSON 文件路径（内容较长时用这个，避免命令行长度限制）")
     args = parser.parse_args()
 
-    data = json.loads(args.data)
+    if args.data_file:
+        with open(args.data_file, encoding="utf-8") as f:
+            data = json.load(f)
+    elif args.data:
+        data = json.loads(args.data)
+    else:
+        parser.error("必须提供 --data 或 --data-file 之一")
     screenshot_dir = os.path.abspath(args.screenshot_dir)
 
     doc = Document(args.template_path)
-    paras = doc.paragraphs
 
     # ── 1. 填充信息表（动态） ──
     info = data.get("info_table", {})
     if info:
         fill_info_table(doc, info)
     else:
-        print("⚠️  JSON 中无 info_table 数据，跳过信息表填充。")
+        print("[!] JSON 中无 info_table 数据，跳过信息表填充。")
 
-    # ── 2. 动态识别章节位置 ──
+    # ── 2. 删除模板中的红色说明段落（模板要求正式提交时删除） ──
+    remove_red_paragraphs(doc)
+
+    # ── 3. 动态识别章节位置 ──
+    # 注意：必须在删除红色段落后重新获取，段落索引已发生变化
+    paras = doc.paragraphs
     section_idx = find_section_indices(paras)
     print(f"章节识别结果：{section_idx}")
 
-    # ── 3. 填充"实验目的" ──
+    # ── 4. 填充"实验目的"（插入式，避免覆盖后续章节标题） ──
     obj_idx = section_idx.get("实验目的")
     if obj_idx is not None:
-        for j, obj in enumerate(data.get("objectives", [])):
-            target_idx = obj_idx + 1 + j
-            if target_idx < len(paras):
-                set_text(paras[target_idx], obj,
-                         font_name='宋体', font_size=Pt(10.5))
+        insert_after = paras[obj_idx]
+        for obj in data.get("objectives", []):
+            insert_after = add_paragraph_after(
+                doc, insert_after, obj,
+                font_name='宋体', font_size=Pt(10.5),
+                first_line_indent=Pt(21), space_after=Pt(3)
+            )
     else:
-        print("⚠️  未找到'实验目的'章节，跳过。")
+        print("[!] 未找到'实验目的'章节，跳过。")
 
-    # ── 4. 填充"实验内容" ──
+    # ── 5. 填充"实验内容"（插入式） ──
     content_idx = section_idx.get("实验内容")
     if content_idx is not None:
-        for j, item in enumerate(data.get("content_items", [])):
-            target_idx = content_idx + 1 + j
-            if target_idx < len(paras):
-                set_text(paras[target_idx], item,
-                         font_name='宋体', font_size=Pt(10.5))
+        insert_after = paras[content_idx]
+        for item in data.get("content_items", []):
+            insert_after = add_paragraph_after(
+                doc, insert_after, item,
+                font_name='宋体', font_size=Pt(10.5),
+                first_line_indent=Pt(21), space_after=Pt(3)
+            )
     else:
-        print("⚠️  未找到'实验内容'章节，跳过。")
+        print("[!] 未找到'实验内容'章节，跳过。")
 
-    # ── 5. 填充"实验步骤" ──
+    # ── 6. 填充"实验步骤" ──
     step_idx = section_idx.get("实验步骤")
     if step_idx is not None:
         insert_after = paras[step_idx]
@@ -287,7 +396,7 @@ def main():
                     )
                     insert_after = ip
                 else:
-                    print(f"⚠️  截图文件不存在：{image_path}")
+                    print(f"[!] 截图文件不存在：{image_path}")
                     wp = add_paragraph_after(
                         doc, insert_after,
                         f"【截图：{step.get('caption', '')}】",
@@ -296,9 +405,9 @@ def main():
                     )
                     insert_after = wp
     else:
-        print("⚠️  未找到'实验步骤'章节，跳过。")
+        print("[!] 未找到'实验步骤'章节，跳过。")
 
-    # ── 6. 填充"实验结果" ──
+    # ── 7. 填充"实验结果" ──
     result_idx = section_idx.get("实验结果")
     if result_idx is not None:
         insert_after = paras[result_idx]
@@ -311,9 +420,9 @@ def main():
             )
             insert_after = rp
     else:
-        print("⚠️  未找到'实验结果'章节，跳过。")
+        print("[!] 未找到'实验结果'章节，跳过。")
 
-    # ── 7. 填充"实验总结" ──
+    # ── 8. 填充"实验总结" ──
     summary_idx = section_idx.get("实验总结")
     if summary_idx is not None:
         summary_text = data.get("summary", "")
@@ -324,12 +433,12 @@ def main():
             first_line_indent=Pt(21), space_after=Pt(3)
         )
     else:
-        print("⚠️  未找到'实验总结'章节，跳过。")
+        print("[!] 未找到'实验总结'章节，跳过。")
 
     # ── 保存 ──
     doc.save(args.output_path)
     size_kb = os.path.getsize(args.output_path) // 1024
-    print(f"✅ 报告已生成：{args.output_path}（{size_kb} KB）")
+    print(f"[OK] 报告已生成：{args.output_path}（{size_kb} KB）")
 
 
 if __name__ == "__main__":
