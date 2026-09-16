@@ -4,7 +4,7 @@ description: >
   课程实验报告的端到端工作流：从需求分析、模板格式提取、环境检查、
   实验执行与截图采集，到根据模板格式生成符合要求的实验报告，再到与模板对比校验格式。
   适用于各类需要提交 .docx 格式实验报告的课程实验。
-version: "3.0.0"
+version: "4.0.0"
 trigger_keywords:
   - 完成实验报告
   - 课程实验
@@ -12,10 +12,15 @@ trigger_keywords:
 agent_created: true
 bundled_files:
   - environments/linux-vm-ssh.md
+  - environments/windows-local.md
+  - references/environment-detection.md
   - references/report_format.md
   - references/screenshot-quality.md
+  - scripts/detect_env.py
   - scripts/vm_shot.sh
+  - scripts/winterm.py
   - scripts/crop_screenshots.py
+  - scripts/crop_console.py
   - scripts/build_report.py
   - scripts/extract_template_format.py
   - scripts/verify_report_format.py
@@ -33,8 +38,8 @@ dependencies:
 
 ```
 Phase 1: 需求分析 + 模板格式提取  →  理解实验要求，提取模板格式
-Phase 2: 环境检查                  →  确认截图工具、模板文件、指导文件就绪
-Phase 3: 实验执行与截图            →  写代码、运行、截图（环境无关）
+Phase 2: 环境检查 + 自主判断环境   →  探测信号，自己判定走哪套截图方法
+Phase 3: 实验执行与截图            →  Windows 本机 / Linux VM 两套方法
 Phase 4: 报告撰写                  →  按模板格式生成 .docx
 Phase 5: 格式校验                  →  与模板对比、修复差异
 ```
@@ -43,6 +48,7 @@ Phase 5: 格式校验                  →  与模板对比、修复差异
 - 每个 Phase 结束时**必须停下来等用户确认**再进入下一 Phase
 - 遇到工具缺失时**明确告知用户**，不要默默跳过
 - 所有截图必须**真实采集**，不得生成模拟图片
+- **执行环境要自主判定，不要一上来就问用户**（见 Phase 2）；只有信号不足时才问
 
 ---
 
@@ -159,18 +165,39 @@ python scripts/extract_template_format.py 模板.docx 输出格式JSON路径
 | 模板 .docx 文件已提供 | 检查文件存在且可读取 | 提示用户提供模板文件 |
 | 实验指导文件已提供 | 检查文件存在且可读取 | 提示用户提供指导文件 |
 
-#### 2.2 确定执行环境
+#### 2.2 自主判定执行环境（不问用户，先自己判）
 
-**询问用户**：实验代码在哪里运行？
+**不要一上来就问用户"代码在哪里跑"。** 先用三类硬信号自己判定：
 
-| 环境 | 特征 | 截图工具 | 参考配置 |
-|------|------|----------|----------|
-| Windows 本机 | 代码在本地运行 | `mcp__desktop-screenshot__take_screenshot` | 无需额外配置 |
-| Linux VM（SSH） | 代码在远程 Linux 上运行 | `gnome-screenshot`（需 X 桌面） | 见 `environments/linux-vm-ssh.md` |
-| macOS 本机 | 代码在本地运行 | `screencapture` | 无需额外配置 |
-| Docker 容器 | 代码在容器内运行 | 视情况而定 | 需用户说明 |
+| 优先级 | 信号 | 怎么拿 |
+|--------|------|--------|
+| 1（最权威） | 实验指导文件里写明的平台 | Phase 1 读指导文件时留意"实验环境"一节（如"掌握 **Windows** 平台下…"/"在 **Linux** 服务器上…"） |
+| 2 | 本机是否已具备实验所需的可执行程序 | 从 Phase 1 的实验步骤里提取程序名（`mongod`、`mongosh`、`gcc`…），交给探测脚本 |
+| 3 | 是否存在可用的 SSH 目标 | 解析 `~/.ssh/config`；必要时真连一次 |
 
-根据用户回答，确定后续 Phase 3 的执行方式。
+一条命令拿到判定结论：
+
+```bash
+python scripts/detect_env.py \
+    --needs <程序1,程序2> \
+    --guide-platform windows|linux|unknown \
+    --ssh-alias <候选别名> \
+    [--test-ssh]
+```
+
+脚本会输出 `▶ 判定结果` + **理由** + **该环境的执行方式/裁剪方式/用户需先做什么/注意事项**。
+判定规则与能力矩阵详见 **`references/environment-detection.md`（本节必读）**。
+
+**关键认知**：判定的本质不是"代码在哪跑"，而是**AI 在这个环境里能做到什么**——
+两套截图方法的差异正源于此。最要命的一条：**Windows 下 AI 开不了终端窗口（平台禁止），
+且提权窗口是盲区**；Linux VM 下则什么都能程序化做。选错环境不是效率问题，是**有些步骤根本做不下去**。
+
+**只有判定结果为 `need-user` 时**（信号不足或互相矛盾）才回头问用户，
+并说明**是哪个信号不足**，而不是笼统地问"环境是啥"。
+
+> **⚠️ 提前扫提权盲区**：判定为 `windows-local` 时，**先扫一遍实验步骤里有没有需要管理员/root 的命令**
+> （`net start/stop <服务>`、改系统配置、写 Program Files 等）。
+> 有的话，在做 Phase 3 计划时就单独列出来，安排成「用户敲命令 + AI 抓屏」，别做到一半才发现。
 
 #### 2.3 本地工具链检查
 
@@ -186,20 +213,23 @@ python scripts/extract_template_format.py 模板.docx 输出格式JSON路径
 
 #### 2.4 明确需要用户手动完成的部分
 
-根据执行环境，列出需用户手动完成的操作：
+按判定出的环境，列出需用户手动完成的操作：
 
 ```
 需要你手动完成的部分：
 1. 模板 .doc → .docx 转换（如尚未完成）—— 用 WPS/Word "另存为 .docx"
-2. [如果环境是 Linux VM] VM 图形界面登录（解锁 GDM）—— 截图前必须
-3. [如果有工具缺失] 安装 xxx
+2. [windows-local] 手动打开一个「普通」（非管理员）PowerShell 窗口并保持前台；
+   若有需要管理员权限的命令，另外开一个提权窗口，命令你自己敲、我负责抓屏
+3. [linux-vm-ssh] VM 图形界面登录（解锁 GDM）—— 截图前必须
+4. [如果有工具缺失] 安装 xxx
 ```
 
 ### 输出
-- 环境检查报告（就绪项 + 缺失项 + 用户需手动完成项 + 确定的执行环境）
+- 环境检查报告（**自主判定的结论 + 理由** + 就绪项 + 缺失项 + 用户需手动完成项）
 
 ### 检查点
-> **停下来问用户：**"环境检查完成。执行环境确定为：{环境}。以上工具就绪/缺失情况如上。确认后进入实验执行。"
+> **停下来问用户：**"环境检查完成。**我自主判定的执行环境是：{环境}，理由是 {理由}**。
+> 以上工具就绪/缺失情况如上。如果你认为判定有误请指出；确认后进入实验执行。"
 
 ---
 
@@ -211,18 +241,42 @@ python scripts/extract_template_format.py 模板.docx 输出格式JSON路径
 
 ### 动作
 
-根据 Phase 2 确定的执行环境，选择对应的执行方式：
+按 Phase 2 **自主判定**出的执行环境，直接查下面这张路由表选方式。**不要在 Phase 3 中途换环境**（整套截图要重做）。
+
+| 判定结果 | 走哪个方式 | 环境必读文档 | 抓图 | 裁剪 |
+|----------|-----------|--------------|------|------|
+| `windows-local` | 方式 A | `environments/windows-local.md` | `winterm.py` + 抓窗口 | `crop_console.py` |
+| `linux-vm-ssh` | 方式 B | `environments/linux-vm-ssh.md` | `vm_shot.sh` | `crop_screenshots.py` |
+| `darwin-local` | 方式 C | — | `screencapture` | `crop_screenshots.py` |
 
 ---
 
-#### 方式 A：Windows/macOS 本机执行
+#### 方式 A：Windows 本机执行
 
-1. **编写代码**：在本地工作目录编写源文件
-2. **运行并捕获输出**：直接运行，记录输出
-3. **截图**：使用对应工具
-   - Windows：`mcp__desktop-screenshot__take_screenshot`
-   - macOS：`screencapture` 命令
-4. **截图裁剪**：使用 `scripts/crop_screenshots.py`
+> ⚠️ **平台禁止程序化启动终端窗口**，因此终端必须由**用户手动打开**。
+> 用户开好窗口后，AI 用 `scripts/winterm.py` 驱动它（激活 → 剪贴板粘贴命令 → 抓窗口区域），
+> 再用 `scripts/crop_console.py` 裁成纯控制台内容。
+> **详细步骤、行数预算、全部踩坑记录见 `environments/windows-local.md`，动手前必读。**
+
+1. **请用户开一个「普通」（非管理员）PowerShell 窗口**并保持前台（管理员窗口 AI 驱动不了）
+2. **统一窗口几何**，保证多张截图规格一致：
+   ```bash
+   python scripts/winterm.py resize --hwnd <H> --w 1760 --h 1500 --x 60 --y 15
+   ```
+   ⚠️ 先按行数预算估算高度：**1240px ≈ 43 行，1500px ≈ 53 行**。
+   一个查询返回 3 个文档可能就占 45 行，高度不够会**把命令滚出画面**（截出来看不到命令）。
+3. **逐块执行 + 抓图**（**务必加 `--paste-all`**：剪贴板粘贴发送，避开 mongosh 等 REPL 的自动补全弹窗）：
+   ```bash
+   python scripts/winterm.py batch --hwnd <H> --steps steps.json --outdir raw --paste-all
+   ```
+4. **裁剪**：
+   ```bash
+   python scripts/crop_console.py raw/s01.png 实验一/screenshots/s01.png \
+       --top 62 --side 12 --bottom-inset 20
+   ```
+5. **提权步骤单独处理**：需要管理员权限的命令（`net stop/start <服务>` 等）AI 驱动不了提权窗口，
+   让用户在**提权窗口**里自己敲、敲一条说一声，AI 抓屏（`GetWindowRect` 读坐标 + `ImageGrab` 抓区域，
+   **抓屏不受提权限制**）。
 
 ---
 
@@ -241,16 +295,28 @@ python scripts/extract_template_format.py 模板.docx 输出格式JSON路径
 5. SCP 拉回截图与 `/tmp/_shot_log.txt`（会话记录）
 6. 截图裁剪：`scripts/crop_screenshots.py --skip-top 37 --margin 8 --uniform-width`
 
+> 这套方式**全流程都能程序化完成**（不需要 GUI 终端，ssh 即可；提权用 sudo 直接在会话里用），
+> 是两类环境里更"自动"的一套。
+
 ---
 
-#### 通用规则（两种方式都适用）
+#### 方式 C：macOS 本机执行
+
+1. **截图**：`screencapture` 命令
+2. **截图裁剪**：`scripts/crop_screenshots.py`
+
+---
+
+#### 通用规则（三种方式都适用）
 
 **★ 最重要的规则：截图必须是"真实终端产生的"。**
 
 - ❌ **不要**在命令脚本里 `echo "[root@master ~]# xxx"` 手工画提示符——
   这样生成的提示符是普通文本、命令无 tty 回显、输出一次性刷出，**一眼就能看出是脚本生成的**。
-- ✅ 让命令真正在交互式 shell 中执行：提示符由 shell 的 PS1 输出、命令由终端回显。
-  Linux VM 上用 `expect` 驱动 `bash -i`（`scripts/vm_shot.sh` 已实现）。
+- ✅ 让命令真正在交互式 shell 中执行：提示符由 shell 自己输出、命令由终端回显。
+  - Linux VM：`expect` 驱动 `bash -i`（`scripts/vm_shot.sh` 已实现）
+  - Windows：驱动用户打开的**真实** PowerShell 窗口，提示符由 PSReadLine 输出、
+    命令靠剪贴板粘贴进去（`scripts/winterm.py` 已实现）
 - 详见 `references/screenshot-quality.md`。
 
 其他通用规则：
@@ -348,6 +414,22 @@ python scripts/build_report.py 1 模板.docx 输出.docx 截图目录 --data 'JS
 | 截图路径找不到 | 文件名与 JSON 中不一致 | 检查并修正 JSON 中的 `image` 字段 |
 | 章节标题匹配失败 | 模板段落文本与预期不符 | 用 python-docx 打印所有段落文本，手动匹配 |
 | 信息表未填充 | 标签文本不匹配 | 检查 `extract_template_format.py` 的输出，修正标签名 |
+| **步骤插不进去** | **`find_section_indices()` 只认「实验目的/实验内容/实验步骤/实验结果/实验总结」**；模板若用「实验环境 / 实验内容及要求 / **实验过程及运行结果**」等写法就匹配不上 | 见下方「模板章节名不标准时」 |
+| **新段落字体字号和模板不一致** | **WPS 生成的模板里 Normal 样式常没有 `w:default="1"` 标记**，`doc.add_paragraph()` 出来的段落若不带 `pStyle`，Word 会退回内置默认字体字号 | 新建段落时**显式** `p.style = doc.styles['Normal']`；具体字号从模板正文 run 上读（如 `<w:sz w:val="24"/>` = 12pt/小四） |
+
+#### 模板章节名不标准时
+
+`build_report.py` 的章节识别是「关键词包含」式，覆盖面有限。遇到模板章节名不标准
+（本例：`一 实验目的 / 二 实验环境 / 三 实验内容及要求 / 三 实验过程及运行结果`）时：
+
+- **不要硬改模板去迁就脚本**——模板是老师给的格式依据，改了反而可能不合要求
+- 写一个**针对该模板的生成器**，复用 `build_report.py` 里的可复用部分
+  （信息表填充 `fill_info_table`、红字清理 `remove_red_paragraphs`、代码块/图片格式），
+  只把「章节定位 + 内容插入」改成按模板实际结构来
+- 两处注意：
+  1. 模板「实验过程」章节下常有**老师给的示例段落**（不一定是红色，`remove_red_paragraphs` 清不掉），
+     要先整段清空再写自己的内容
+  2. 模板若存在编号笔误（如两个章节都写成「三」），改掉并在总结里说明
 
 ### 输出
 - 实验报告 .docx 文件（v1 初版）
@@ -443,11 +525,13 @@ python scripts/verify_report_format.py 模板.docx 生成报告.docx --figs <预
 | 文件 | 内容 | 何时阅读 |
 |------|------|----------|
 | `environments/linux-vm-ssh.md` | Linux VM（SSH）环境的连接参数、截图工作流详细步骤 | 当执行环境为 Linux VM 时，Phase 2/3 参考 |
+| `environments/windows-local.md` | **Windows 本机**环境的终端截图工作流：平台限制、协作分工、行数预算、裁剪偏移、9 条踩坑记录 | **当执行环境为 Windows 时，Phase 2/3 全程必读** |
 
 ### References（参考文档）
 
 | 文件 | 内容 | 何时阅读 |
 |------|------|----------|
+| `references/environment-detection.md` | **执行环境自主判定规范**：两类环境的能力矩阵、三类判定信号与优先级、判定流程、环境→执行方式路由表、提权盲区提前规划 | **Phase 2 全程必读**；判定出现分歧时查这份 |
 | `references/report_format.md` | 报告格式规范（固定规则 + 需从模板提取的项说明） | Phase 1 格式提取、Phase 5 格式校验 |
 | `references/screenshot-quality.md` | **截图质量规范**：真实终端原则、四步流水线、行数预算、裁剪策略、QC 自检清单、故障速查 | **Phase 3 全程必读**；用户对截图提出意见时优先查这份 |
 
@@ -456,7 +540,10 @@ python scripts/verify_report_format.py 模板.docx 生成报告.docx --figs <预
 | 文件 | 功能 | 何时使用 |
 |------|------|----------|
 | `scripts/extract_template_format.py` | 从模板 .docx 自动提取格式信息，输出 JSON | Phase 1 模板格式提取 |
+| `scripts/detect_env.py` | **执行环境自主判定**：探测本机系统 / 所需程序 / SSH 目标，按优先级给出 `verdict` + 理由 + 该环境的执行方式与注意事项 | **Phase 2 环境判定**（核心） |
 | `scripts/vm_shot.sh` | **Linux VM 截图脚本**：expect 驱动真实交互式 bash + 窗口截图 + 会话记录 + 环境唤醒/解锁/清理 | Phase 3，环境为 Linux VM SSH 时 |
-| `scripts/crop_screenshots.py` | 裁剪截图，支持 `--rect`（统一尺寸）/ `--uniform-width`（统一宽+紧贴高）/ `--skip-top` / `--margin` | Phase 3 截图后 |
+| `scripts/winterm.py` | **Windows 终端驱动脚本**：激活窗口 / 键盘输入 / 剪贴板粘贴 / 抓窗口区域，支持按 JSON 步骤表批量执行 | Phase 3，环境为 Windows 时 |
+| `scripts/crop_console.py` | **Windows 终端截图裁剪**：去标题栏/标签栏/边框 + 按背景色裁掉空白 | Phase 3，Windows 截图后 |
+| `scripts/crop_screenshots.py` | 裁剪截图，支持 `--rect`（统一尺寸）/ `--uniform-width`（统一宽+紧贴高）/ `--skip-top` / `--margin` | Phase 3 截图后（Linux VM / macOS 用） |
 | `scripts/build_report.py` | 从模板 + JSON 数据生成 .docx 报告（支持 `--data` / `--data-file`） | Phase 4 报告撰写 |
 | `scripts/verify_report_format.py` | 逐项比对模板与成稿的格式，输出通过/差异清单（退出码 0/1） | Phase 5 格式校验 |
